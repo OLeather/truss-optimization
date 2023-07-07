@@ -42,8 +42,10 @@ class Force():
         self.tensile = 0
 
 class Truss():
-    MAX_TENSILE = 9 # kN
-    MAX_COMPRESSIVE = 6 # kN
+    MAX_TENSILE = 50 # kN
+    MAX_COMPRESSIVE = 50 # kN
+    COST_PER_JOINT = 5 # Dollars
+    COST_PER_M = 15 # Dollars
 
     def __init__(self, joints, links, forces):
         '''
@@ -56,10 +58,9 @@ class Truss():
     
     def solve(self):
         '''
-        @return : whether the truss survives the load
+        @return cost, success : the cost of the bridge and whether the truss survives the load
         '''
         unknowns = []
-        unknowns_pair = []
         equations = []
         knowns = []
         for i in range(len(self.joints)):
@@ -75,13 +76,7 @@ class Truss():
                     connected_joints.add(link[1])
                 if link[1] == i:
                     connected_joints.add(link[0])
-
-            x_terms = []
-            y_terms = []
-
-            x_terms_dict = {}
-            y_terms_dict = {}
-                         
+    
             # Moment equation at pin joint
             if(joint.type == JointType.PIN):
                 known = 0
@@ -182,14 +177,14 @@ class Truss():
 
             eqn_str = "" + left_side + right_side + "\\" + "\\"
             
-            print(eqn_str)
+            # print(eqn_str)
         
         for i in range(len(X)):
             solved = X[i][0]
             key = unknowns[i]
             split = key.split('_')
             key = split[0] + "_{" + split[1] + split[2] + "}"
-            print(key + " = " + str(round(solved,3)), "\\\\")
+            # print(key + " = " + str(round(solved,3)), "\\\\")
 
         i = 0
         for unknown in unknowns:
@@ -219,7 +214,28 @@ class Truss():
                 joint1.fxs.append(-force*ux)
                 joint1.fys.append(-force*uy)
             i += 1
-        return False
+
+        success = True
+        for joint in self.joints:
+            for i in range(len(joint.fxs)):
+                fx = joint.fxs[i]
+                fy = joint.fys[i]
+                magnitude = math.sqrt(fx*fx+fy*fy)
+                if magnitude > self.MAX_TENSILE:
+                    success = False
+        
+        cost = 0
+        cost += len(self.joints) * self.COST_PER_JOINT
+
+        for link in self.links:
+            joint0 = self.joints[link[0]]
+            joint1 = self.joints[link[1]]
+            distance = math.sqrt((joint0.x-joint1.x)*(joint0.x-joint1.x)+(joint0.y-joint1.y)*(joint0.y-joint1.y))
+            cost += distance * self.COST_PER_M
+
+        if not success:
+            cost += 100000
+        return cost, success
 
     def apply_external_forces(self):
         for force in self.forces:
@@ -253,10 +269,11 @@ class Truss():
                 plt.annotate('{0}kN'.format(str(round(math.sqrt(joint.fx*joint.fx+joint.fy*joint.fy), 3))), xy=(joint.x+joint.fx, joint.y+joint.fy), xytext=(0, 0), textcoords='offset points')
             if plot_member:
                 for i in range(len(joint.fxs)):
-                    fx = joint.fxs[i]/6
-                    fy = joint.fys[i]/6
-                    plt.arrow(joint.x, joint.y, fx, fy, width=.5, label="force")
-                    plt.annotate('{0}kN'.format(str(round(math.sqrt(fx*fx+fy*fy), 3))), xy=(joint.x+fx, joint.y+fy), xytext=(0, 0), textcoords='offset points')
+                    fx = joint.fxs[i]
+                    fy = joint.fys[i]
+                    if fx != 0 or fy != 0:
+                        plt.arrow(joint.x, joint.y, fx, fy, width=.5, label="force")
+                        plt.annotate('{0}kN'.format(str(round(math.sqrt(fx*fx+fy*fy), 3))), xy=(joint.x+fx, joint.y+fy), xytext=(0, 0), textcoords='offset points')
         plt.title(title)
         plt.show()
 
