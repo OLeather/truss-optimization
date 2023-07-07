@@ -2,6 +2,7 @@ from enum import Enum
 import math
 import matplotlib.pyplot as plt
 import numpy as np
+import sympy
 
 # class syntax
 class JointType(Enum):
@@ -19,6 +20,8 @@ class Joint():
         self.y = y
         self.update_forces(fx, fy)
         self.grounded = grounded
+        self.fxs = []
+        self.fys = []
     
     def update_forces(self, fx, fy):
         self.fx = fx
@@ -31,7 +34,6 @@ class Force():
         self.joints_applied = joints_applied
         self.compressive = 0
         self.tensile = 0
-    
     def __init__(self, fx, fy, joints_applied):
         self.fx = fx
         self.fy = fy
@@ -57,10 +59,9 @@ class Truss():
         @return : whether the truss survives the load
         '''
         unknowns = set()
+        unknowns_pair = []
         equations = []
-        known_terms = []
-        
-
+        knowns = []
         for i in range(len(self.joints)):
             joint = self.joints[i]
 
@@ -80,117 +81,122 @@ class Truss():
 
             x_terms_dict = {}
             y_terms_dict = {}
-            
-            
-            for connected_joint_i in connected_joints:
-                connected_joint = self.joints[connected_joint_i]
-                vx = connected_joint.x-joint.x
-                vy = connected_joint.y-joint.y
-                ux = vx/math.sqrt(vx*vx+vy*vy)
-                uy = vy/math.sqrt(vx*vx+vy*vy)
-                
-                term_name = "f_{0}{1}".format(i, connected_joint_i)
-                term_name_reverse = "f_{0}{1}".format(connected_joint_i, i)
-
-                x_term = ("", 0)
-                y_term = ("", 0)
-                if term_name_reverse in unknowns:
-                    x_terms.append((term_name_reverse, -ux))
-                    y_terms.append((term_name_reverse, -uy))
-                    x_term = (term_name_reverse, -ux)
-                    y_term = (term_name_reverse, -uy)
-                    x_terms_dict[term_name_reverse] = -ux
-                    y_terms_dict[term_name_reverse] = -uy
-                else:
-                    x_terms.append((term_name, ux))
-                    y_terms.append((term_name, uy))
-                    x_term = (term_name, ux)
-                    y_term = (term_name, uy)
-                    x_terms_dict[term_name] = ux
-                    y_terms_dict[term_name] = uy
-
-                    unknowns.add(term_name)
-            
-            nonzero_x = False
-            nonzero_y = False
-            for key in x_terms_dict:
-                if(x_terms_dict[key] != 0):
-                    nonzero_x = True
-            for key in y_terms_dict:
-                if(y_terms_dict[key] != 0):
-                    nonzero_y = True
-            
-            if(nonzero_x):
-                equations.append(x_terms_dict)
-                known_terms.append(-fknown_x)
-            if(nonzero_y):
-                equations.append(y_terms_dict)  
-                known_terms.append(-fknown_y)
-
+                         
+            # Moment equation at pin joint
             if(joint.type == JointType.PIN):
-                moment_eqn = {}
                 known = 0
-                for connected_joint_i in range(len(self.joints)):
-                    if(connected_joint_i != i):
-                        connected_joint = self.joints[connected_joint_i]
-                        if(connected_joint.fy != 0):
-                            known -= connected_joint.fy
-                        if(connected_joint.grounded):
-                            moment_eqn["F_N{0}y".format(i)] = abs(joint.x-connected_joint.x)
+                moment_eqn = {}
+                # Sum up the known moments
+                for j in range(len(self.joints)):
+                    if j != i:
+                        other = self.joints[j]
+                        d = abs(other.x - joint.x)
+                        # Subtract the left side of the equation by fy * d for each external force
+                        known -= other.fy * d
+                        if other.grounded:
+                            term_name = "N_{0}_y".format(j)
+                            unknowns.add(term_name)
+                            # The unknown scalar = distance from joint to other
+                            moment_eqn[term_name] = d
 
                 equations.append(moment_eqn)
-                known_terms.append(known)
+                knowns.append(known)
 
-            format_str_x = "F_net_{0}x = 0 = ".format(i) + str(fknown_x)
-            if(joint.grounded):
-                format_str_x += (" + " + "F_N{0}x".format(i))
-                unknowns.add("F_N{0}x".format(i))
-                x_terms_dict["F_N{0}x".format(i)] = 1
-
-            for term in x_terms:
-                format_str_x += " + " + str(term[0]) + "*{0}".format(term[1])
-            format_str_y = "F_net_{0}y = 0 = ".format(i) + str(fknown_y) + ((" + " + "F_N{0}y".format(i)) if joint.type == JointType.PIN and joint.grounded else "")
-            
-            if(joint.grounded and joint.type == JointType.PIN):
-                format_str_y += (" + " + "F_N{0}y".format(i))
-                unknowns.add("F_N{0}y".format(i))
-                y_terms_dict["F_N{0}y".format(i)] = 1
+            # Fnet Equations For Connected Joints
+            fnet_x = {}
+            fnet_y = {}
+            for connected_joint_i in connected_joints:
+                connected_joint = self.joints[connected_joint_i]
                 
-            for term in y_terms:
-                format_str_y += " + " + str(term[0]) + "*{0}".format(term[1])
+                term_name = "F_{0}_{1}".format(i, connected_joint_i)
+                term_name_reverse = "F_{0}_{1}".format(connected_joint_i, i)
+                
+                reversed = 1
+                if term_name_reverse in unknowns:
+                    term_name = term_name_reverse
+                    reversed = -1
+                else:
+                    unknowns.add(term_name)
+                
+                vx = connected_joint.x-joint.x
+                vy = connected_joint.y-joint.y
+                ux = vx/math.sqrt(vx*vx+vy*vy) * reversed
+                uy = vy/math.sqrt(vx*vx+vy*vy) * reversed
+
+                fnet_x[term_name] = ux
+                fnet_y[term_name] = uy
             
-            print(format_str_x)
-            print(format_str_y)
+            if(joint.type == JointType.PIN):
+                term_name = "N_{0}_x".format(i)
+                fnet_x[term_name] = 1
+                unknowns.add(term_name)
+                term_name = "N_{0}_y".format(i)
+                fnet_y[term_name] = 1
+                unknowns.add(term_name)
+            if(joint.type == JointType.ROLLER):
+                term_name = "N_{0}_y".format(i)
+                fnet_y[term_name] = 1
+                unknowns.add(term_name)
+                
+            equations.append(fnet_x)
+            knowns.append(-joint.fx)
+            equations.append(fnet_y)
+            knowns.append(-joint.fy)
 
-  
-
-        
         print(equations)
-        print(known_terms)
-
+        print(knowns)
         print(unknowns)
-
+        
         A = []
-
         for eqn in equations:
             row = []
             for unknown in unknowns:
                 if unknown in eqn:
                     row.append(eqn[unknown])
                 else:
-                    row.append(0.0)
+                    row.append(0)
             A.append(row)
-            print(row)
+
         B = []
-        for known in known_terms:
+        for known in knowns:
             B.append([known])
-            print(known)
 
+        _, indices = sympy.Matrix(A).rref()
+ 
+        A_ = []
+        B_ = []
+        for i in indices:
+            A_.append(A[i])
+            B_.append(B[i])
 
-        X = np.linalg.inv(np.array(A)).dot(np.array(B))
+        print(A_)
+        print(B_)
+        X = np.linalg.inv(A_).dot(B_)
+        print(X)     
 
-        print(X)
-            
+        i = 0
+        for unknown in unknowns:
+            split = unknown.split('_')
+            if split[0] == 'N':
+                joint0 = self.joints[int(split[1])]
+                if split[2] == 'x':
+                    joint0.fxs.append(X[i][0])
+                if split[2] == 'y':
+                    joint0.fys.append(X[i][0])
+            if split[0] == 'F':
+                force = X[i][0]
+                joint0 = self.joints[int(split[1])]
+                joint1 = self.joints[int(split[2])]
+                vx = joint1.x-joint0.x
+                vy = joint1.y-joint0.y
+                ux = vx/math.sqrt(vx*vx+vy*vy)
+                uy = vy/math.sqrt(vx*vx+vy*vy)
+
+                joint0.fxs.append(force*ux)
+                joint0.fys.append(force*uy)
+                joint1.fxs.append(-force*ux)
+                joint1.fys.append(-force*uy)
+            i += 1
         return False
 
     def apply_external_forces(self):
@@ -212,17 +218,24 @@ class Truss():
         for i in range(len(self.joints)):
             print("Joint: {0} Fx={1}, Fy={2}".format(i, self.joints[i].fx, self.joints[i].fy))
 
-    def plot(self):
+    def plot(self, title = "", plot_external = False, plot_member = False):
         for link in self.links:
             plt.plot([self.joints[link[0]].x, self.joints[link[1]].x], [self.joints[link[0]].y, self.joints[link[1]].y], color='black', marker='o')
-            plt.annotate('{0}'.format(link[0]), xy=(self.joints[link[0]].x, self.joints[link[0]].y), xytext=(self.joints[link[0]].x, self.joints[link[0]].y), textcoords='offset points')
-            plt.annotate('{0}'.format(link[1]), xy=(self.joints[link[1]].x, self.joints[link[1]].y), xytext=(self.joints[link[1]].x, self.joints[link[1]].y), textcoords='offset points')
+            plt.annotate('{0}'.format(link[0]), xy=(self.joints[link[0]].x, self.joints[link[0]].y), xytext=(2, 2), textcoords='offset points')
+            plt.annotate('{0}'.format(link[1]), xy=(self.joints[link[1]].x, self.joints[link[1]].y), xytext=(2, 2), textcoords='offset points')
 
         for joint in self.joints:
-            if(joint.fx != 0 or joint.fy != 0):
+            if((joint.fx != 0 or joint.fy != 0) and plot_external):
+                print(joint.x, joint.y, joint.fx, joint.fy)
                 plt.arrow(joint.x, joint.y, joint.fx, joint.fy, width=1, label="force")
-                plt.annotate('{0}kN'.format(math.sqrt(joint.fx*joint.fx+joint.fy*joint.fy)), xy=(joint.x+joint.fx, joint.y+joint.fy), xytext=(joint.x+joint.fx, joint.y+joint.fy), textcoords='offset points')
-
+                plt.annotate('{0}kN'.format(str(round(math.sqrt(joint.fx*joint.fx+joint.fy*joint.fy), 3))), xy=(joint.x+joint.fx, joint.y+joint.fy), xytext=(0, 0), textcoords='offset points')
+            if plot_member:
+                for i in range(len(joint.fxs)):
+                    fx = joint.fxs[i]/6
+                    fy = joint.fys[i]/6
+                    plt.arrow(joint.x, joint.y, fx, fy, width=.5, label="force")
+                    plt.annotate('{0}kN'.format(str(round(math.sqrt(fx*fx+fy*fy), 3))), xy=(joint.x+fx, joint.y+fy), xytext=(0, 0), textcoords='offset points')
+        plt.title(title)
         plt.show()
 
 
