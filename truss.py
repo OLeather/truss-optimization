@@ -58,7 +58,7 @@ class Truss():
         '''
         @return : whether the truss survives the load
         '''
-        unknowns = set()
+        unknowns = []
         unknowns_pair = []
         equations = []
         knowns = []
@@ -95,7 +95,7 @@ class Truss():
                         known -= other.fy * d
                         if other.grounded:
                             term_name = "N_{0}_y".format(j)
-                            unknowns.add(term_name)
+                            unknowns.append(term_name)
                             # The unknown scalar = distance from joint to other
                             moment_eqn[term_name] = d
 
@@ -116,7 +116,7 @@ class Truss():
                     term_name = term_name_reverse
                     reversed = -1
                 else:
-                    unknowns.add(term_name)
+                    unknowns.append(term_name)
                 
                 vx = connected_joint.x-joint.x
                 vy = connected_joint.y-joint.y
@@ -125,28 +125,24 @@ class Truss():
 
                 fnet_x[term_name] = ux
                 fnet_y[term_name] = uy
-            
+
+            if(joint.type == JointType.ROLLER or joint.type == JointType.PIN):
+                term_name = "N_{0}_y".format(i)
+                fnet_y[term_name] = 1
+                if term_name not in unknowns:
+                    unknowns.append(term_name)            
             if(joint.type == JointType.PIN):
                 term_name = "N_{0}_x".format(i)
                 fnet_x[term_name] = 1
-                unknowns.add(term_name)
-                term_name = "N_{0}_y".format(i)
-                fnet_y[term_name] = 1
-                unknowns.add(term_name)
-            if(joint.type == JointType.ROLLER):
-                term_name = "N_{0}_y".format(i)
-                fnet_y[term_name] = 1
-                unknowns.add(term_name)
+                if term_name not in unknowns:
+                    unknowns.append(term_name)
+
                 
             equations.append(fnet_x)
             knowns.append(-joint.fx)
             equations.append(fnet_y)
             knowns.append(-joint.fy)
 
-        print(equations)
-        print(knowns)
-        print(unknowns)
-        
         A = []
         for eqn in equations:
             row = []
@@ -168,20 +164,44 @@ class Truss():
         for i in indices:
             A_.append(A[i])
             B_.append(B[i])
-
-        print(A_)
-        print(B_)
         X = np.linalg.inv(A_).dot(B_)
-        print(X)     
+    
+        # pretty print equations
+        for i in range(len(A_)):
+            eqn = A_[i]
+            left_side = str(round(B_[i][0],3)) + " = "
+            right_side = ""
+            for j in range(len(eqn)):      
+                if(eqn[j] != 0):         
+                    key = unknowns[j]
+                    split = key.split('_')
+                    key = split[0] + "_{" + split[1] + split[2] + "}"
+                    if right_side != "":
+                        right_side += " + "
+                    right_side += str(round(eqn[j],3)) + str(key)
+
+            eqn_str = "" + left_side + right_side + "\\" + "\\"
+            
+            print(eqn_str)
+        
+        for i in range(len(X)):
+            solved = X[i][0]
+            key = unknowns[i]
+            split = key.split('_')
+            key = split[0] + "_{" + split[1] + split[2] + "}"
+            print(key + " = " + str(round(solved,3)), "\\\\")
 
         i = 0
         for unknown in unknowns:
             split = unknown.split('_')
+
             if split[0] == 'N':
                 joint0 = self.joints[int(split[1])]
                 if split[2] == 'x':
                     joint0.fxs.append(X[i][0])
+                    joint0.fys.append(0)
                 if split[2] == 'y':
+                    joint0.fxs.append(0)
                     joint0.fys.append(X[i][0])
             if split[0] == 'F':
                 force = X[i][0]
@@ -191,6 +211,8 @@ class Truss():
                 vy = joint1.y-joint0.y
                 ux = vx/math.sqrt(vx*vx+vy*vy)
                 uy = vy/math.sqrt(vx*vx+vy*vy)
+
+                # print(unknown, split, force*ux, force*uy, -force*ux, -force*uy)
 
                 joint0.fxs.append(force*ux)
                 joint0.fys.append(force*uy)
@@ -226,7 +248,7 @@ class Truss():
 
         for joint in self.joints:
             if((joint.fx != 0 or joint.fy != 0) and plot_external):
-                print(joint.x, joint.y, joint.fx, joint.fy)
+                # print(joint.x, joint.y, joint.fx, joint.fy)
                 plt.arrow(joint.x, joint.y, joint.fx, joint.fy, width=1, label="force")
                 plt.annotate('{0}kN'.format(str(round(math.sqrt(joint.fx*joint.fx+joint.fy*joint.fy), 3))), xy=(joint.x+joint.fx, joint.y+joint.fy), xytext=(0, 0), textcoords='offset points')
             if plot_member:
