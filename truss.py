@@ -7,9 +7,10 @@ import numpy as np
 class JointType(Enum):
     PIN = 1
     ROLLER = 2
+    GUSSET = 3
 
 # functional syntax
-JointType = Enum('JointType', ['PIN', 'ROLLER'])
+JointType = Enum('JointType', ['PIN', 'ROLLER', 'GUSSET'])
 
 class Joint():
     def __init__(self, type, x, y, fx = 0, fy = 0, grounded=False):
@@ -55,7 +56,10 @@ class Truss():
         '''
         @return : whether the truss survives the load
         '''
-        unknowns = {}
+        unknowns = set()
+        equations = []
+        known_terms = []
+        
 
         for i in range(len(self.joints)):
             joint = self.joints[i]
@@ -74,6 +78,10 @@ class Truss():
             x_terms = []
             y_terms = []
 
+            x_terms_dict = {}
+            y_terms_dict = {}
+            
+            
             for connected_joint_i in connected_joints:
                 connected_joint = self.joints[connected_joint_i]
                 vx = connected_joint.x-joint.x
@@ -81,18 +89,107 @@ class Truss():
                 ux = vx/math.sqrt(vx*vx+vy*vy)
                 uy = vy/math.sqrt(vx*vx+vy*vy)
                 
-                x_terms.append(("f_{0}{1}".format(i, connected_joint_i), ux))
-                y_terms.append(("f_{0}{1}".format(i, connected_joint_i), uy))
+                term_name = "f_{0}{1}".format(i, connected_joint_i)
+                term_name_reverse = "f_{0}{1}".format(connected_joint_i, i)
 
-            format_str_x = "F_net_{0}x = 0 = ".format(i) + str(fknown_x) + ((" + " + "F_N{0}x".format(i)) if joint.grounded else "")
+                x_term = ("", 0)
+                y_term = ("", 0)
+                if term_name_reverse in unknowns:
+                    x_terms.append((term_name_reverse, -ux))
+                    y_terms.append((term_name_reverse, -uy))
+                    x_term = (term_name_reverse, -ux)
+                    y_term = (term_name_reverse, -uy)
+                    x_terms_dict[term_name_reverse] = -ux
+                    y_terms_dict[term_name_reverse] = -uy
+                else:
+                    x_terms.append((term_name, ux))
+                    y_terms.append((term_name, uy))
+                    x_term = (term_name, ux)
+                    y_term = (term_name, uy)
+                    x_terms_dict[term_name] = ux
+                    y_terms_dict[term_name] = uy
+
+                    unknowns.add(term_name)
+            
+            nonzero_x = False
+            nonzero_y = False
+            for key in x_terms_dict:
+                if(x_terms_dict[key] != 0):
+                    nonzero_x = True
+            for key in y_terms_dict:
+                if(y_terms_dict[key] != 0):
+                    nonzero_y = True
+            
+            if(nonzero_x):
+                equations.append(x_terms_dict)
+                known_terms.append(-fknown_x)
+            if(nonzero_y):
+                equations.append(y_terms_dict)  
+                known_terms.append(-fknown_y)
+
+            if(joint.type == JointType.PIN):
+                moment_eqn = {}
+                known = 0
+                for connected_joint_i in range(len(self.joints)):
+                    if(connected_joint_i != i):
+                        connected_joint = self.joints[connected_joint_i]
+                        if(connected_joint.fy != 0):
+                            known -= connected_joint.fy
+                        if(connected_joint.grounded):
+                            moment_eqn["F_N{0}y".format(i)] = abs(joint.x-connected_joint.x)
+
+                equations.append(moment_eqn)
+                known_terms.append(known)
+
+            format_str_x = "F_net_{0}x = 0 = ".format(i) + str(fknown_x)
+            if(joint.grounded):
+                format_str_x += (" + " + "F_N{0}x".format(i))
+                unknowns.add("F_N{0}x".format(i))
+                x_terms_dict["F_N{0}x".format(i)] = 1
+
             for term in x_terms:
                 format_str_x += " + " + str(term[0]) + "*{0}".format(term[1])
             format_str_y = "F_net_{0}y = 0 = ".format(i) + str(fknown_y) + ((" + " + "F_N{0}y".format(i)) if joint.type == JointType.PIN and joint.grounded else "")
+            
+            if(joint.grounded and joint.type == JointType.PIN):
+                format_str_y += (" + " + "F_N{0}y".format(i))
+                unknowns.add("F_N{0}y".format(i))
+                y_terms_dict["F_N{0}y".format(i)] = 1
+                
             for term in y_terms:
                 format_str_y += " + " + str(term[0]) + "*{0}".format(term[1])
             
             print(format_str_x)
             print(format_str_y)
+
+  
+
+        
+        print(equations)
+        print(known_terms)
+
+        print(unknowns)
+
+        A = []
+
+        for eqn in equations:
+            row = []
+            for unknown in unknowns:
+                if unknown in eqn:
+                    row.append(eqn[unknown])
+                else:
+                    row.append(0.0)
+            A.append(row)
+            print(row)
+        B = []
+        for known in known_terms:
+            B.append([known])
+            print(known)
+
+
+        X = np.linalg.inv(np.array(A)).dot(np.array(B))
+
+        print(X)
             
         return False
 
