@@ -47,7 +47,7 @@ class Truss():
     COST_PER_JOINT = 5 # Dollars
     COST_PER_M = 15 # Dollars
 
-    def __init__(self, joints, links, forces):
+    def __init__(self, joints, links, forces, multipliers):
         '''
         @param joints: list of Joint objects
         @param links: list of tuples connecting joints by index
@@ -55,187 +55,143 @@ class Truss():
         self.joints = joints
         self.links = links
         self.forces = forces
+        self.multipliers = multipliers
     
-    def solve(self):
+    def solve(self, print_solution = False):
         '''
         @return cost, success : the cost of the bridge and whether the truss survives the load
         '''
         unknowns = []
         equations = []
         knowns = []
-        for i in range(len(self.joints)):
-            joint = self.joints[i]
-
+        for i, joint in enumerate(self.joints):
             connected_joints = set()
-            
-            fknown_x = joint.fx
-            fknown_y = joint.fy
 
+            # Get connected joints 
             for link in self.links:
                 if link[0] == i:
                     connected_joints.add(link[1])
                 if link[1] == i:
                     connected_joints.add(link[0])
-    
-            # Moment equation at pin joint
-            if(joint.type == JointType.PIN):
-                known = 0
-                moment_eqn = {}
-                # Sum up the known moments
-                for j in range(len(self.joints)):
-                    if j != i:
-                        other = self.joints[j]
-                        d = abs(other.x - joint.x)
-                        # Subtract the left side of the equation by fy * d for each external force
-                        known -= other.fy * d
-                        if other.grounded:
-                            term_name = "N_{0}_y".format(j)
-                            unknowns.append(term_name)
-                            # The unknown scalar = distance from joint to other
-                            moment_eqn[term_name] = d
 
-                equations.append(moment_eqn)
-                knowns.append(known)
-
-            # Fnet Equations For Connected Joints
-            fnet_x = {}
+            # Calculate Fnet
             fnet_y = {}
-            for connected_joint_i in connected_joints:
-                connected_joint = self.joints[connected_joint_i]
-                
-                term_name = "F_{0}_{1}".format(i, connected_joint_i)
-                term_name_reverse = "F_{0}_{1}".format(connected_joint_i, i)
-                
-                reversed = 1
-                if term_name_reverse in unknowns:
-                    term_name = term_name_reverse
-                    reversed = -1
+            fnet_x = {}
+            for j in connected_joints:
+                other = self.joints[j]
+
+                term_name = "F_{0}_{1}".format(i, j)
+                term_name_reversed = "F_{0}_{1}".format(j, i)
+                if term_name_reversed in unknowns:
+                    term_name = term_name_reversed
                 else:
                     unknowns.append(term_name)
                 
-                vx = connected_joint.x-joint.x
-                vy = connected_joint.y-joint.y
-                ux = vx/math.sqrt(vx*vx+vy*vy) * reversed
-                uy = vy/math.sqrt(vx*vx+vy*vy) * reversed
+                vx = (other.x-joint.x)
+                vy = (other.y-joint.y)
+                ux = vx / math.sqrt(vx*vx+vy*vy)
+                uy = vy / math.sqrt(vx*vx+vy*vy)
 
                 fnet_x[term_name] = ux
                 fnet_y[term_name] = uy
-
-            if(joint.type == JointType.ROLLER or joint.type == JointType.PIN):
+            
+            if joint.type == JointType.ROLLER or joint.type == JointType.PIN:
                 term_name = "N_{0}_y".format(i)
                 fnet_y[term_name] = 1
                 if term_name not in unknowns:
-                    unknowns.append(term_name)            
-            if(joint.type == JointType.PIN):
+                    unknowns.append(term_name)
+        
+            if joint.type == JointType.PIN:
                 term_name = "N_{0}_x".format(i)
                 fnet_x[term_name] = 1
                 if term_name not in unknowns:
                     unknowns.append(term_name)
-
-                
+            
+            # Add fnet_x equation to equations list and external fx to knowns list
             equations.append(fnet_x)
             knowns.append(-joint.fx)
+
+            # Add fnet_y equation to equations list and external fy to knowns list
             equations.append(fnet_y)
             knowns.append(-joint.fy)
 
+        A, B = self.construct_system(equations, knowns, unknowns)
+
+        X = np.linalg.inv(A).dot(B)
+
+        if print_solution:
+            for i, unknown in enumerate(unknowns):
+                print(unknown, "=", X[i][0])
+
+        # Calculate cost and success
+        success = self.check_constraints(X, unknowns)        
+        cost = self.calculate_cost()
+
+        if not success:
+            cost += 10000
+        return cost, success
+    
+    def construct_system(self, equations, knowns, unknowns):
         A = []
-        for eqn in equations:
+        B = []
+        
+        for i, equation in enumerate(equations):
             row = []
             for unknown in unknowns:
-                if unknown in eqn:
-                    row.append(eqn[unknown])
+                if unknown in equation:
+                    row.append(equation[unknown])
                 else:
                     row.append(0)
             A.append(row)
+            B.append([knowns[i]])
 
-        B = []
-        for known in knowns:
-            B.append([known])
+        return A, B
 
-        _, indices = sympy.Matrix(A).rref()
- 
-        A_ = []
-        B_ = []
-        for i in indices:
-            A_.append(A[i])
-            B_.append(B[i])
-        X = np.linalg.inv(A_).dot(B_)
-    
-        # pretty print equations
-        for i in range(len(A_)):
-            eqn = A_[i]
-            left_side = str(round(B_[i][0],3)) + " = "
-            right_side = ""
-            for j in range(len(eqn)):      
-                if(eqn[j] != 0):         
-                    key = unknowns[j]
-                    split = key.split('_')
-                    key = split[0] + "_{" + split[1] + split[2] + "}"
-                    if right_side != "":
-                        right_side += " + "
-                    right_side += str(round(eqn[j],3)) + str(key)
-
-            eqn_str = "" + left_side + right_side + "\\" + "\\"
-            
-            # print(eqn_str)
-        
-        for i in range(len(X)):
-            solved = X[i][0]
-            key = unknowns[i]
-            split = key.split('_')
-            key = split[0] + "_{" + split[1] + split[2] + "}"
-            # print(key + " = " + str(round(solved,3)), "\\\\")
-
-        i = 0
-        for unknown in unknowns:
-            split = unknown.split('_')
-
-            if split[0] == 'N':
-                joint0 = self.joints[int(split[1])]
-                if split[2] == 'x':
-                    joint0.fxs.append(X[i][0])
-                    joint0.fys.append(0)
-                if split[2] == 'y':
-                    joint0.fxs.append(0)
-                    joint0.fys.append(X[i][0])
-            if split[0] == 'F':
-                force = X[i][0]
-                joint0 = self.joints[int(split[1])]
-                joint1 = self.joints[int(split[2])]
-                vx = joint1.x-joint0.x
-                vy = joint1.y-joint0.y
-                ux = vx/math.sqrt(vx*vx+vy*vy)
-                uy = vy/math.sqrt(vx*vx+vy*vy)
-
-                # print(unknown, split, force*ux, force*uy, -force*ux, -force*uy)
-
-                joint0.fxs.append(force*ux)
-                joint0.fys.append(force*uy)
-                joint1.fxs.append(-force*ux)
-                joint1.fys.append(-force*uy)
-            i += 1
-
+    def check_constraints(self, X, unknowns):
         success = True
-        for joint in self.joints:
-            for i in range(len(joint.fxs)):
-                fx = joint.fxs[i]
-                fy = joint.fys[i]
-                magnitude = math.sqrt(fx*fx+fy*fy)
-                if magnitude > self.MAX_TENSILE:
+        for i, num in enumerate(X):
+            term = unknowns[i]
+            split = term.split('_')
+            # Only apply constraints to member forces
+            if split[0] == 'F':
+                i1 = int(split[1])
+                i2 = int(split[2])
+                tup = (i1, i2)
+                tup_inv = (i2, i1)
+
+                if tup in self.links:
+                    j = self.links.index(tup)
+                    multiplier = self.multipliers[j]
+                if tup_inv in self.links:
+                    j = self.links.index(tup_inv)
+                    multiplier = self.multipliers[j]
+
+                # print(multiplier)
+                
+                # Compressive
+                if num > 0 and abs(num) > self.MAX_COMPRESSIVE * multiplier:
                     success = False
-        
+
+                # Tensile
+                if num < 0 and abs(num) > self.MAX_TENSILE * multiplier:
+                    success = False
+        return success
+
+    def calculate_cost(self):
         cost = 0
+
+        # Calculate cost of trusses ($15 per m)
+        for i, link in enumerate(self.links):
+            multiplier = self.multipliers[i]
+            j0 = self.joints[link[0]]
+            j1 = self.joints[link[1]]
+            d = math.sqrt(math.pow(j1.x-j0.x,2) + math.pow(j1.y-j0.y, 2))
+            cost += d * self.COST_PER_M * multiplier
+        
+        # Calculate cost of gussets ($5 per joint)
         cost += len(self.joints) * self.COST_PER_JOINT
 
-        for link in self.links:
-            joint0 = self.joints[link[0]]
-            joint1 = self.joints[link[1]]
-            distance = math.sqrt((joint0.x-joint1.x)*(joint0.x-joint1.x)+(joint0.y-joint1.y)*(joint0.y-joint1.y))
-            cost += distance * self.COST_PER_M
-
-        if not success:
-            cost += 100000
-        return cost, success
+        return cost
 
     def apply_external_forces(self):
         for force in self.forces:
