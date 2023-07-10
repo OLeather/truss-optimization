@@ -58,7 +58,6 @@ class Link():
         self.member_force = force
 
 
-
 def length(x0, y0, x1, y1):
     return sp.sqrt(sp.Pow(x1-x0,2)+sp.Pow(y1-y0,2))
     
