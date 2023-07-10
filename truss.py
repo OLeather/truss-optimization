@@ -2,7 +2,7 @@ from enum import Enum
 import math
 import matplotlib.pyplot as plt
 import numpy as np
-import sympy
+import sympy as sp
 import json
 
 
@@ -52,10 +52,16 @@ class Link():
         self.i1 = i1
         self.member_force = 0 # + for compression, - for tension
         self.multiplier = 1
+        self.distance = 0
 
     def set_member_force(self, force):
         self.member_force = force
 
+
+
+def length(x0, y0, x1, y1):
+    return sp.sqrt(sp.Pow(x1-x0,2)+sp.Pow(y1-y0,2))
+    
 class Truss():
     MAX_TENSILE = 9 # kN
     MAX_COMPRESSIVE = 6 # kN
@@ -252,6 +258,136 @@ class Truss():
         if not success:
             cost += 10000
         return cost, success
+
+    def generate_symbolic_equations(self):
+        xs = []
+        ys = []
+
+        for i, joint in enumerate(self.joints):
+            xi = sp.symbols('x{0}'.format(i))
+            yi = sp.symbols('y{0}'.format(i))
+            
+            xs.append(xi)
+            ys.append(yi)
+        
+        for j, link in enumerate(self.links):
+            link.distance = sp.symbols('d{0}'.format(j))
+        
+        equations = []
+        forces = []
+        distances = []
+        distance_joints = []
+        unknown_assign = {}
+        for i, joint in enumerate(self.joints):
+            # contains tuples of (Link(), other joint index)
+            connected_joints = set()
+
+
+            # Get connected joints
+            for link in self.links:
+                if link.i0 == i:
+                    connected_joints.add((link, link.i1))
+                if link.i1 == i:
+                    connected_joints.add((link, link.i0))
+
+            fnetX = joint.fex
+            fnetY = joint.fey
+
+            # Add member forces to equation
+            for k, (link, j) in enumerate(connected_joints):
+                xi = xs[i]
+                xj = xs[j]
+                yi = ys[i]
+                yj = ys[j]
+                
+                term_name = "F{0}{1}".format(i, j)
+                term_name_reversed = "F{0}{1}".format(j, i)
+
+                force = sp.symbols(term_name)
+                force_reversed = sp.symbols(term_name_reversed)
+                if force_reversed in forces:
+                    force = force_reversed
+                else:
+                    forces.append(force)
+                    unknown_assign[force] = link.set_member_force
+
+                vx = xj-xi
+                vy = yj-yi
+                # d = sp.sqrt(sp.Pow(vx,2) + sp.Pow(vy,2))
+                    
+                ux = vx/link.distance
+                uy = vy/link.distance
+                
+                fnetX += ux * force
+                fnetY += uy * force
+
+            # Add normal forces of supports to equations
+            if joint.type == JointType.ROLLER or joint.type == JointType.PIN:
+                term_name = "N{0}y".format(i)
+                force = sp.symbols(term_name)
+                fnetY += force
+                if force not in forces:
+                    forces.append(force)
+                    unknown_assign[force] = joint.set_fy
+
+            if joint.type == JointType.PIN:
+                term_name = "N{0}x".format(i)
+                force = sp.symbols(term_name)
+                fnetX += force
+                if force not in forces:
+                    forces.append(force)
+                    unknown_assign[force] = joint.set_fx
+            
+            equations.append(fnetX)
+            equations.append(fnetY)
+        
+        solution = sp.solve(equations, forces, dict=True)[0]
+
+        
+        for force, eqn in solution.items():
+        #     eqn_new = eqn
+        #     for i, distance in enumerate(distances):
+        #         joints = distance_joints[i]
+        #         eqn_new = eqn_new.subs(distance, length(joints[0], joints[1], joints[2], joints[3]))
+        #     solution[force] = eqn_new
+            solution[force] = sp.simplify(eqn)
+            unknown_assign[force](eqn)
+
+        cost = self.compute_cost_function(self.links)
+
+        return solution, xs + ys, cost
+    
+    
+    
+    def compute_cost_function(self, links):
+        # The cost is computed as the following:
+        # Sum of the length of each member * (force of member * multiplier function)
+        
+        def numeric_multiplier(x):
+            # Tensile
+            if x < 0:
+                return 1 if abs(x) < self.MAX_TENSILE else (2 if abs(x) < self.MAX_TENSILE * 2 else 3)
+            else:
+                return 1 if abs(x) < self.MAX_COMPRESSIVE else (2 if abs(x) < self.MAX_COMPRESSIVE * 2 else 3)
+
+        def multiplier(x):        
+            e = 2.71828
+            b = 23
+            n = 8.885
+            m = 17.885
+            p = 10
+            j = 5.885
+            k = 11.885
+            return 1 + sp.Pow(1/(1+sp.Pow(e,-b*(-x-n))), p) + sp.Pow(1/(1+sp.Pow(e,-b*(-x-m))), p) + sp.Pow(1/(1+sp.Pow(e,-b*(x-j))), p) + sp.Pow(1/(1+sp.Pow(e,-b*(x-k))), p)
+
+        cost = len(self.joints) * self.COST_PER_JOINT
+
+        for link in links:
+            cost += multiplier(link.member_force) * length(self.joints[link.i0].x, self.joints[link.i0].y, self.joints[link.i1].x, self.joints[link.i1].y) * self.COST_PER_M
+        
+        
+
+        return cost
     
     def construct_system(self, equations, knowns, unknowns):
         A = []
