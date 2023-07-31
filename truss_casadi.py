@@ -1,6 +1,10 @@
-from casadi import *
+import casadi
+from casadi import sqrt, constpow, vertcat, horzcat, SX, MX, solve, jacobian, hessian, Function, fabs
 from truss import JointType
 from sortedcollections import OrderedSet
+import json
+import matplotlib.pyplot as plt
+import math
 
 class Joint():
     def __init__(self, type):
@@ -9,10 +13,10 @@ class Joint():
         self.fey = 0
         self.fx = 0
         self.fy = 0
-    def set_fx(self, fx):
+    def set_fx(self, fx, jac, hess):
         self.fx = fx
     
-    def set_fy(self, fy):
+    def set_fy(self, fy, jac, hess):
         self.fy = fy
 
 class Link():
@@ -20,10 +24,16 @@ class Link():
         self.i0 = i0
         self.i1 = i1
         self.force = 0
-        self.length = 0
     
-    def set_force(self, force):
-        self.force = force
+    def set_force(self, f, jac, hess):
+        self.force = f
+        self.force_jac = jac
+        self.force_hess = hess
+
+    def set_length(self, l, jac, hess):
+        self.length = l
+        self.length_jac = jac
+        self.length_hess = hess
 
 class Force():
     def __init__(self, fx, fy, joints):
@@ -35,6 +45,69 @@ def length(x0, y0, x1, y1):
     return sqrt(constpow(x0-x1,2) + constpow(y0-y1,2))
 
 
+def open_file(filename, y_shift = 0, flip=False, print_data=False):
+        f = open(filename)
+        if(flip):
+            flip = -1
+        else:
+            flip = 1
+        # returns JSON object as 
+        # a dictionary
+        data = json.load(f)
+        joints = []
+        links = []
+        forces = []
+        xs = [0] * len(data["nodes"]*2)
+        y_offset = len(data["nodes"])
+        bridge_joints = []
+        x_offset = 0
+        for i, node in enumerate(data["nodes"]):
+            split = node.split(',')
+            x = float(split[0])
+            y = float(split[1])
+            type = JointType.GUSSET
+            for support in data["supports"]:
+                attached = int(support)
+                if attached == i:
+                    type_str = str(data["supports"][support])
+                    if type_str == "P":
+                        type = JointType.PIN
+                    if type_str == "Rh":
+                        type = JointType.ROLLER
+            if print_data:
+                print("Joint", i, type, x, y)
+            x_offset = min(x, x_offset)
+            xs[i] = x
+            xs[i+y_offset] = y*flip + y_shift
+            if(y*flip + y_shift == 0):
+                bridge_joints.append(i)
+            joints.append(Joint(type))
+        for i in range(len(xs)):
+            xs[i] = xs[i] - x_offset
+        bridge_joints.sort(key=lambda i : xs[i])
+
+        for member in data["members"]:
+            split = member.split(',')
+            i0 = int(split[0])
+            i1 = int(split[1])
+            links.append(Link(i0, i1))
+            if print_data:
+                print("Link:", i0, i1)
+
+        for force in data["forces"]:
+            split = force.split(',')
+            i = int(split[0])
+            fx = float(split[1])
+            fy = float(split[2])
+            if print_data:
+                print("Force", i, fx, fy)
+        
+            forces.append(Force(fx=fx, fy=-fy, joints=[i]))
+
+        
+        return Truss(joints, links, [Force(fx=0, fy=2.5, joints=bridge_joints)]), bridge_joints, xs
+
+        
 class Truss():
     FORCE_PER_M = 5 # kg/m
     COST_PER_JOINT = 5 # Dollars
@@ -52,27 +125,36 @@ class Truss():
         self.construct_knowns_vector()
         self.A = self.construct_equations_matrix()
         self.cost = self.compute_cost_function()
-        self.jacobian = self.compute_jacobian()
-        self.hessian = self.compute_hessian()
+        # self.jacobian = self.compute_jacobian()
+        # self.hessian = self.compute_hessian()
 
     def apply_link_lengths(self):
         for i, link in enumerate(self.links):
-            link.length = length(self.xs[link.i0], self.xs[link.i0 + self.y_offset], self.xs[link.i1], self.xs[link.i1 + self.y_offset])
+            l = length(self.xs[link.i0], self.xs[link.i0 + self.y_offset], self.xs[link.i1], self.xs[link.i1 + self.y_offset])
+            jac = jacobian(l, self.xs)
+            [hess, g] = hessian(l, self.xs)
+            link.set_length(l, jac, hess)
             link.force = SX.sym('F{0}'.format(i))
 
     def apply_external_forces(self):
         for force in self.forces:
+            # print(force.joints)
             if len(force.joints) == 1:
-                self.joints[force.links[0]].fex = force.fx
-                self.joints[force.links[0]].fey = force.fy
+                self.joints[force.joints[0]].fex = force.fx
+                self.joints[force.joints[0]].fey = force.fy
             elif len(force.joints) > 1:
                 for i in range(len(force.joints)-1):
                     j = force.joints[i]
                     k = force.joints[i+1]
-                    self.joints[i].fex += force.fx * length(self.xs[j], self.xs[j + self.y_offset], self.xs[k], self.xs[k + self.y_offset]) / 2
-                    self.joints[i].fey += force.fy * length(self.xs[j], self.xs[j + self.y_offset], self.xs[k], self.xs[k + self.y_offset]) / 2 
+
+                    self.joints[j].fex += force.fx * length(self.xs[j], self.xs[j + self.y_offset], self.xs[k], self.xs[k + self.y_offset]) / 2
+                    self.joints[j].fey += force.fy * length(self.xs[j], self.xs[j + self.y_offset], self.xs[k], self.xs[k + self.y_offset]) / 2 
                     self.joints[k].fex += force.fx * length(self.xs[j], self.xs[j + self.y_offset], self.xs[k], self.xs[k + self.y_offset]) / 2
-                    self.joints[k].fey += force.fy * length(self.xs[j], self.xs[j + self.y_offset], self.xs[k], self.xs[k + self.y_offset]) / 2 
+                    self.joints[k].fey += force.fy * length(self.xs[j], self.xs[j + self.y_offset], self.xs[k], self.xs[k + self.y_offset]) / 2
+
+        #             print(j, k, self.joints[i].fex, self.joints[i].fey) 
+        # for i in range(len(self.joints)):
+        #     print(i, self.joints[i].fey)
 
     def construct_knowns_vector(self):
         knowns = []
@@ -167,32 +249,58 @@ class Truss():
         
         # print(solution.shape)
         for i, assign in enumerate(unknown_assign.values()):
-            assign(solution[i])
+            f = solution[i]
+            # jac = jacobian(solution[i], self.xs)
+            # [hes, g] = hessian(solution[i], self.xs)
+            assign(f, None, None)
         
         return solution
 
 
     def compute_cost_function(self):
-        # https://www.desmos.com/calculator/ao7fjllkuj
+        # https://www.desmos.com/calculator/40bxe1edsw
         def multiplier(x):
             e = 2.71828
             p = 10
             b = 23
+            # n = 8.7
+            # m = 17.7
+            # j = 5.7
+            # k = 11.7
             n = 8.885
             m = 17.885
             j = 5.885
             k = 11.885
-            return constpow(1/(1+constpow(e,-b*(-x-n))), p) \
-                + constpow(1/(1+constpow(e,-b*(-x-m))), p) \
-                + constpow(1/(1+constpow(e,-b*(x-j))), p) \
-                + constpow(1/(1+constpow(e,-b*(x-k))), p) + 1
-
+            return constpow(1/(1+constpow(e,-b*(x-n))), p) \
+                + constpow(1/(1+constpow(e,-b*(x-m))), p) \
+                + constpow(1/(1+constpow(e,-b*(-x-j))), p) \
+                + constpow(1/(1+constpow(e,-b*(-x-k))), p) + 1
+    
+        def real_multiplier(x):
+            relu_neg = (casadi.sign(x)-1)/2*x
+            relu_pos = (casadi.sign(x)+1)/2*x
+            x_ = casadi.ceil(casadi.fabs(relu_neg)/6) + casadi.ceil(casadi.fabs(relu_pos)/9)
+            return x_
         
         cost = len(self.joints) * self.COST_PER_JOINT
 
         for link in self.links:
             cost += multiplier(link.force) * length(self.xs[link.i0], self.xs[link.i0 + self.y_offset], self.xs[link.i1], self.xs[link.i1 + self.y_offset]) * self.COST_PER_M
-        
+
+        return cost
+    
+    def real_cost(self, xs):
+        cost = len(self.joints) * self.COST_PER_JOINT
+
+        for link in self.links:
+            force = float(Function('force', [self.xs], [link.force])(xs))
+            length = float(Function('length', [self.xs], [link.length])(xs))
+            multiplier = 1
+            if(force < 0):
+                multiplier = int(-force/6)+1
+            else:
+                multiplier = int(force/9)+1
+            cost += length*self.COST_PER_M*multiplier
         return cost
 
     def compute_jacobian(self):
@@ -209,3 +317,47 @@ class Truss():
     def print_link_forces(self):
         for i, link in enumerate(self.links):
             print("Link", i, link.force)
+
+    def plot(self, xs, title = "", plot_external = False, plot_member = False):
+            for link in self.links:
+                plt.plot([xs[link.i0], xs[link.i1]], [xs[link.i0+self.y_offset], xs[link.i1+self.y_offset]], color='black', marker='o', linewidth=1)
+                plt.annotate('{0}'.format(link.i0), xy=(xs[link.i0], xs[link.i0+self.y_offset]), xytext=(2, 2), textcoords='offset points')
+                plt.annotate('{0}'.format(link.i1), xy=(xs[link.i1], xs[link.i1+self.y_offset]), xytext=(2, 2), textcoords='offset points')
+
+            for i, joint in enumerate(self.joints):
+                x = xs[i]
+                y = xs[i+self.y_offset]
+                fx = float(Function('fx', [self.xs], [joint.fx])(xs))
+                fy = -float(Function('fy', [self.xs], [joint.fy])(xs))
+                fex = float(Function('fex', [self.xs], [joint.fex])(xs))
+                fey = -float(Function('fey', [self.xs], [joint.fey])(xs))
+                # print(i, fex, fey)
+                if((joint.fex != 0 or fey != 0)) and plot_external:
+                    mag = round(math.sqrt(fex*fex+fey*fey), 3)
+                    plt.arrow(xs[i], xs[i+self.y_offset], fex/6, -fey/6, width=.3, label="force")
+                    # plt.annotate('{0}kN'.format(str(mag)), xy=(joint.x+joint.fex, joint.y+joint.fey), xytext=(0, 0), textcoords='offset points')
+                    t = plt.text(xs[i]+fex/6, xs[i+self.y_offset]+fey/6, '{0}kN'.format(mag), fontsize=10)
+                    t.set_bbox(dict(facecolor='grey', alpha=0.5, edgecolor='grey'))
+                if((fx != 0 or fy != 0)) and plot_member:
+                    mag = round(math.sqrt(fx*fx+fy*fy), 3)
+                    plt.arrow(xs[i], xs[i+self.y_offset], fx/6, fy/6, width=.3, label="force")
+                    t = plt.text(xs[i]+fx/6, xs[i+self.y_offset]+fy/6, '{0}kN'.format(mag), fontsize=10)
+                    t.set_bbox(dict(facecolor='grey', alpha=0.5, edgecolor='grey'))
+            
+            if plot_member:
+                for link in self.links:
+                    x0 = xs[link.i0]
+                    y0 = xs[link.i0+self.y_offset]
+                    x1 = xs[link.i1]
+                    y1 = xs[link.i1+self.y_offset]
+
+                    mx = (x1+x0)/2
+                    my = (y1+y0)/2
+
+                    force = round(float(Function('force', [self.xs], [link.force])(xs)), 3)
+                    color = 'blue' if force > 0 else 'red'
+                    t = plt.text(mx, my, '{0}kN'.format(force), fontsize=10)
+                    t.set_bbox(dict(facecolor=color, alpha=0.5, edgecolor=color))
+
+            plt.title(title)
+            plt.show()
