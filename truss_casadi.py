@@ -235,14 +235,14 @@ class Truss():
                 else:
                     eqn.append(0)
             A.append(eqn)
-            # print(equation_names[i], "=", eqn)
+            # print(equation_names[i])
         # print(A)
         As = []
         for row in A:
             As.append(horzcat(*row))
         
         Ab = vertcat(*As)
-
+        self.Ab_ = Ab
         # print(Ab)
         solution = solve(Ab, self.external_forces)
         
@@ -318,6 +318,7 @@ class Truss():
             print("Link", i, link.force)
 
     def plot(self, xs, title = "", plot_external = False, plot_member = False):
+
             for link in self.links:
                 plt.plot([xs[link.i0], xs[link.i1]], [xs[link.i0+self.y_offset], xs[link.i1+self.y_offset]], color='black', marker='o', linewidth=1)
                 plt.annotate('{0}'.format(link.i0), xy=(xs[link.i0], xs[link.i0+self.y_offset]), xytext=(2, 2), textcoords='offset points')
@@ -358,5 +359,5 @@ class Truss():
                     t = plt.text(mx, my, '{0}kN'.format(force), fontsize=5)
                     t.set_bbox(dict(facecolor=color, alpha=0.5, edgecolor=color))
 
-            plt.title(title)
+            plt.title('Cost: ${:.2f}'.format(float(Function("cost_fn_title", [self.xs], [self.real_cost])(xs))))
             plt.show()
