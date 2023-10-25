@@ -1,5 +1,5 @@
 # Truss Optimization
-This repo was made as an extension to a school project from MTE 119: Statics. The goal of the project was to design a low-cost truss bridge that would support a train of given mass without
+This repo was made as an extension to a school project from MTE 119: Statics along with team members [Tom Wielemaker](https://github.com/tjwielem), [Theresa Nguyen](https://github.com/therresa), Nush Majra, and [Hasan Tahir](https://github.com/Hasan3773). The goal of the project was to design a low-cost truss bridge that would support a train of given mass without
 exceeding given maximum tension and compression forces within each member.
 
 ## Methodology
