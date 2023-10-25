@@ -22,3 +22,8 @@ Since the cost function was formulated symbolically using CasADI, the computer a
 
 
 ## Results
+### Input Shape
+![image](https://github.com/OLeather/truss-optimization/assets/43189206/839a8fb3-1ca6-488b-b068-53f4bdf00b02)
+
+### Output Optimization
+![image](https://github.com/OLeather/truss-optimization/assets/43189206/579f6908-90f0-464e-95b7-159a17a91be9)
